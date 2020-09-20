@@ -14,7 +14,7 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 		init: function() {
 
 			// Document ready.
-			$( document ).ready( app.ready );
+			$( app.ready );
 
 			// Page load.
 			$( window ).on( 'load', app.load );
@@ -53,6 +53,9 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 					$list.append( $listItems.splice( Math.floor( Math.random() * $listItems.length ), 1 )[0] );
 				}
 			} );
+
+			// Unlock pagebreak navigation.
+			$( '.wpforms-page-button' ).prop( 'disabled', false );
 
 			$( document ).trigger( 'wpformsReady' );
 		},
@@ -211,6 +214,14 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 					}, wpforms_settings.val_phone );
 				}
 
+				// Validate Input Mask minimum length.
+				$.validator.addMethod( 'empty-blanks', function( value, element ) {
+					if ( typeof $.fn.inputmask === 'undefined' ) {
+						return true;
+					}
+					return ! ( value.indexOf( element.inputmask.opts.placeholder ) + 1 );
+				}, wpforms_settings.val_empty_blanks );
+
 				// Validate US Phone Field.
 				$.validator.addMethod( 'us-phone-field', function( value, element ) {
 					if ( value.match( /[^\d()\-+\s]/ ) ) {
@@ -264,6 +275,8 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 									element.parent().after( error );
 								} else if ( element.hasClass( 'wpforms-validation-group-member' ) ) {
 									element.closest( '.wpforms-field' ).append( error );
+								} else if ( element.hasClass( 'choicesjs-select' ) ) {
+									element.closest( '.wpforms-field' ).append( error );
 								} else {
 									error.insertAfter( element );
 								}
@@ -296,6 +309,12 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 									$submit     = $form.find( '.wpforms-submit' ),
 									altText     = $submit.data( 'alt-text' ),
 									recaptchaID = $submit.get( 0 ).recaptchaID;
+
+								if ( $form.data( 'token' ) && 0 === $( '.wpforms-token', $form ).length ) {
+									$( '<input type="hidden" class="wpforms-token" name="wpforms[token]" />' )
+										.val( $form.data( 'token' ) )
+										.appendTo( $form );
+								}
 
 								$submit.prop( 'disabled', true );
 								$form.find( '#wpforms-field_recaptcha-error' ).remove();
@@ -557,6 +576,12 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 					}
 				} );
 			} );
+
+			// Update hidden input of the `Smart` phone field to be sure the latest value will be submitted.
+			$( '.wpforms-form' ).on( 'wpformsBeforeFormSubmit', function() {
+
+				$( this ).find( '.wpforms-smart-phone-field' ).trigger( 'input' );
+			} );
 		},
 
 		/**
@@ -655,6 +680,12 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 						$input    = $( self.input.element ),
 						sizeClass = $element.data( 'size-class' );
 
+					// Remove hidden attribute and hide `<select>` like a screen-reader text.
+					// It's important for field validation.
+					$element
+						.removeAttr( 'hidden' )
+						.addClass( self.config.classNames.input + '--hidden' );
+
 					// Add CSS-class for size.
 					if ( sizeClass ) {
 						$( self.containerOuter.element ).addClass( sizeClass );
@@ -671,13 +702,26 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 						if ( self.getValue( true ).length ) {
 							$input.addClass( self.config.classNames.input + '--hidden' );
 						}
-
-						// On change event.
-						$element.on( 'change', function() {
-
-							self.getValue( true ).length ? $input.addClass( self.config.classNames.input + '--hidden' ) : $input.removeClass( self.config.classNames.input + '--hidden' );
-						} );
 					}
+
+					// On change event.
+					$element.on( 'change', function() {
+
+						var validator;
+
+						// Listen if multiple select has choices.
+						if ( $element.prop( 'multiple' ) ) {
+							self.getValue( true ).length > 0 ? $input.addClass( self.config.classNames.input + '--hidden' ) : $input.removeClass( self.config.classNames.input + '--hidden' );
+						}
+
+						validator = $element.closest( 'form' ).data( 'validator' );
+
+						if ( ! validator ) {
+							return;
+						}
+
+						validator.element( $element );
+					} );
 				};
 
 				args.callbackOnCreateTemplates = function() {
@@ -757,7 +801,7 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 			} );
 
 			// Payment radio/checkbox fields: preselect the selected payment (from dynamic/fallback population).
-			$( document ).ready( function() {
+			$( function() {
 
 				// Radios.
 				$( '.wpforms-field-radio .wpforms-image-choices-item input:checked' ).change();
@@ -792,7 +836,7 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 			} );
 
 			// Rating field: preselect the selected rating (from dynamic/fallback population).
-			$( document ).ready( function() {
+			$( function() {
 				$( '.wpforms-field-rating-item input:checked' ).change();
 			} );
 
@@ -941,8 +985,9 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 			} );
 
 			// Allow only numbers, minus and decimal point to be entered into the Numbers field.
-			$( document ).on( 'input', '.wpforms-field-number input', function( e ) {
-				this.value = this.value.replace( /[^-0-9.]/g, '' );
+			$( document ).on( 'keypress', '.wpforms-field-number input', function( e ) {
+
+				return /^[-0-9.]+$/.test( String.fromCharCode( e.keyCode || e.which ) );
 			} );
 		},
 
@@ -1025,6 +1070,13 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 				// Validate.
 				if ( typeof $.fn.validate !== 'undefined' ) {
 					$page.find( ':input' ).each( function( index, el ) {
+
+						// Skip input fields without `name` attribute, which could have fields.
+						// E.g. `Placeholder` input for Modern dropdown.
+						if ( ! $( el ).attr( 'name' ) ) {
+							return;
+						}
+
 						if ( ! $( el ).valid() ) {
 							valid = false;
 						}
@@ -1543,6 +1595,8 @@ var wpforms = window.wpforms || ( function( document, window, $ ) {
 		 * @param {jQuery} $form Form element.
 		 */
 		formSubmit: function( $form ) {
+
+			$form.trigger( 'wpformsBeforeFormSubmit' );
 
 			if ( $form.hasClass( 'wpforms-ajax-form' ) && typeof FormData !== 'undefined' ) {
 				app.formSubmitAjax( $form );
